@@ -1,0 +1,30 @@
+{
+  "name": "Meu Cuidado Diário",
+  "short_name": "Meu Cuidado Diário",
+  "description": "Meu Cuidado Diário — Gestão inteligente de medicamentos, calendário unificado e assistente de bula.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f8f6",
+  "theme_color": "#246b59",
+  "lang": "pt-BR",
+  "icons": [
+    {
+      "src": "/icons/medicamentos.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/medicamentos-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/medicamentos-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

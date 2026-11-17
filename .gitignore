@@ -1,0 +1,13 @@
+# JavaScript
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/*.py[cod]
+
+# Local configuration
+backend/.env
+.DS_Store
