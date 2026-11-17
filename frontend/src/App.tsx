@@ -21,13 +21,24 @@ import {
   Stethoscope,
   Trash2,
 } from "lucide-react";
+import {
+  HighReadabilityKpiBar,
+  formatBoxEquivalence,
+} from "./components/HighReadabilityKpiBar";
 import { MiniReportModal } from "./components/MiniReportModal";
 import { PharmacyMiniMap } from "./components/PharmacyMiniMap";
 import { ProfileSelectorBar, getKinshipEmoji } from "./components/ProfileSelectorBar";
 import { RealTimeClock } from "./components/RealTimeClock";
 import { ScheduleConfirmationModal } from "./components/ScheduleConfirmationModal";
 import { UnifiedCalendar } from "./components/UnifiedCalendar";
-import { database, ensureDefaultProfiles } from "./db/database";
+import {
+  MEDICATION_COLOR_PALETTE,
+  database,
+  deleteProfileCascade,
+  ensureDefaultProfiles,
+  getDefaultMedicationColor,
+  getMedicationAcronym,
+} from "./db/database";
 import { insertSampleMedications } from "./db/seed";
 import {
   TRIMESTRAL_ALERT_TEXT,
@@ -103,13 +114,14 @@ function App() {
   const restockFileInputRef = useRef<HTMLInputElement | null>(null);
   const [activeRestockTarget, setActiveRestockTarget] = useState<Medication | null>(null);
 
-  // Campos do formulário de Novo Medicamento (com Regras Clínicas)
+  // Campos do formulário de Novo Medicamento (com Regras Clínicas + Cor de Identificação)
   const [formProfileId, setFormProfileId] = useState<number>(1);
   const [formOrigemPrescricao, setFormOrigemPrescricao] =
     useState<PrescriptionOrigin>("emergencia");
   const [formCondicaoTratamento, setFormCondicaoTratamento] = useState<string>("Dor / Febre");
   const [formNome, setFormNome] = useState("");
   const [formDosagem, setFormDosagem] = useState("");
+  const [formCorIdentificacao, setFormCorIdentificacao] = useState<string>("#2563eb");
   const [formUnidade, setFormUnidade] = useState<MedicationUnit>("comprimido");
   const [formQuantidadePorDose, setFormQuantidadePorDose] = useState<number>(1);
   const [formTipo, setFormTipo] = useState<MedicationType>("temporario");
@@ -176,7 +188,6 @@ function App() {
     };
   }, [loadAllData]);
 
-  // Sincroniza o perfil padrão do formulário quando o usuário alterna a aba de perfil no topo
   useEffect(() => {
     if (selectedProfileId !== "all") {
       setFormProfileId(selectedProfileId);
@@ -204,7 +215,6 @@ function App() {
     return profileMap.get(formProfileId) ?? profiles[0];
   }, [selectedProfileId, profileMap, formProfileId, profiles]);
 
-  // Medicamentos e alertas filtrados pelo Perfil selecionado (ou Todos)
   const visibleMedications = useMemo(() => {
     if (selectedProfileId === "all") return allMedications;
     return allMedications.filter((m) => m.profileId === selectedProfileId);
@@ -215,7 +225,6 @@ function App() {
     return alertsQueue.filter((a) => a.profileId === selectedProfileId);
   }, [alertsQueue, selectedProfileId]);
 
-  // Próximos horários de toda a família em ordem cronológica (para visão "Todos" do cuidador)
   const chronologicalFamilySchedule = useMemo(() => {
     const items: {
       horario: string;
@@ -250,13 +259,13 @@ function App() {
     [visibleMedications, selectedDate],
   );
 
-  // Inicializa o mini-mapa com localização de referência assim que a tela abre ou quando estoque fica baixo
   useEffect(() => {
     if (!pharmaciesData) {
       void fetchNearbyPharmacies(-23.561414, -46.655881, 3000).then(setPharmaciesData);
     }
   }, [pharmaciesData]);
 
+  // Gerenciamento Completo de Perfis: Criar, Editar e Excluir em Cascata
   async function handleCreateProfile(newProfileData: Omit<PatientProfile, "id">) {
     const newId = await database.profiles.add(newProfileData);
     await loadAllData();
@@ -265,6 +274,32 @@ function App() {
       `👤 Perfil "${newProfileData.nome}" (${newProfileData.parentesco}${
         newProfileData.condicaoClinica ? ` • ${newProfileData.condicaoClinica}` : ""
       }) criado e selecionado!`,
+    );
+  }
+
+  async function handleUpdateProfile(updatedProfile: PatientProfile) {
+    if (!updatedProfile.id) return;
+    await database.profiles.update(updatedProfile.id, {
+      nome: updatedProfile.nome,
+      parentesco: updatedProfile.parentesco,
+      idade: updatedProfile.idade,
+      pesoKg: updatedProfile.pesoKg,
+      condicaoClinica: updatedProfile.condicaoClinica,
+      corAvatar: updatedProfile.corAvatar,
+    });
+    await loadAllData();
+    setMessage(`✏️ Perfil "${updatedProfile.nome}" atualizado com sucesso!`);
+  }
+
+  async function handleDeleteProfile(profileId: number) {
+    const targetName = profileMap.get(profileId)?.nome ?? "Perfil";
+    const { deletedMeds, remainingProfiles } = await deleteProfileCascade(profileId);
+    await loadAllData();
+    if (selectedProfileId === profileId) {
+      setSelectedProfileId(remainingProfiles[0]?.id ?? "all");
+    }
+    setMessage(
+      `🗑️ Perfil "${targetName}" excluído em cascata junto com ${deletedMeds} medicação(ões) e históricos vinculados.`,
     );
   }
 
@@ -277,8 +312,8 @@ function App() {
       await loadAllData();
       setMessage(
         insertedCount > 0
-          ? `${insertedCount} medicamentos iniciais (Dipirona 15 gotas e Gardenal 100mg) salvos nos perfis da família.`
-          : "Os medicamentos iniciais de teste já estavam salvos neste dispositivo.",
+          ? `✅ ${insertedCount} medicações de exemplo (GAR • Gardenal, ESC • Escitalopram e DIP • Dipirona) carregadas com siglas e cores distintas!`
+          : "As 3 medicações de exemplo (GAR, ESC e DIP) já estão ativas no calendário.",
       );
     } catch (error) {
       console.error("Erro ao inserir medicamentos de teste:", error);
@@ -287,7 +322,6 @@ function App() {
     }
   }
 
-  // Muda comportamento quando o usuário escolhe Emergência vs Tratamento Especializado
   function handleSelectPrescriptionOrigin(origin: PrescriptionOrigin) {
     setFormOrigemPrescricao(origin);
     if (origin === "emergencia") {
@@ -295,7 +329,6 @@ function App() {
       setFormDuracaoDias((prev) => (prev && prev > 0 ? prev : 3));
       setFormIntervaloHoras(8);
     } else {
-      // Tratamento Especializado ativa automaticamente controle rigoroso / uso contínuo
       setFormTipo("continuo");
       setFormControlado(true);
       if (formTipoReceita === "simples") {
@@ -307,11 +340,11 @@ function App() {
     }
   }
 
-  // Atalhos rápidos no formulário para o Checkpoint de Testes
   function fillEmergencyPresetDipironaGotas() {
     handleSelectPrescriptionOrigin("emergencia");
     setFormNome("Dipirona");
     setFormDosagem("500mg/ml");
+    setFormCorIdentificacao("#059669");
     setFormUnidade("gotas");
     setFormQuantidadePorDose(15);
     setFormIntervaloHoras(8);
@@ -338,6 +371,7 @@ function App() {
     setFormTipo("continuo");
     setFormNome("Clonazepam");
     setFormDosagem("2mg");
+    setFormCorIdentificacao("#e11d48");
     setFormUnidade("comprimido");
     setFormQuantidadePorDose(1);
     setFormIntervaloHoras(24);
@@ -349,7 +383,6 @@ function App() {
     setFormCondicaoTratamento("Alzheimer");
   }
 
-  // Passo 1 do Cadastro: Abre a Tela Obrigatória de Confirmação de Horários antes de salvar
   function handlePrepareNewMedicationSchedule(e: React.FormEvent) {
     e.preventDefault();
     if (!formNome.trim() || !formDosagem.trim()) return;
@@ -362,6 +395,9 @@ function App() {
       profileId: formProfileId || (profiles[0]?.id ?? 1),
       nome: formNome.trim(),
       dosagem: formDosagem.trim(),
+      corIdentificacao:
+        formCorIdentificacao ||
+        getDefaultMedicationColor(formNome.trim(), allMedications.length),
       unidade: formUnidade,
       quantidadePorDose: Number(formQuantidadePorDose) || 1,
       origemPrescricao: formOrigemPrescricao,
@@ -371,7 +407,8 @@ function App() {
       tipoReceita: formTipoReceita,
       intervaloHoras: Number(formIntervaloHoras) || 8,
       horarios: calculatedSlots,
-      duracaoDias: effectiveTipo === "temporario" ? Math.max(1, Number(formDuracaoDias) || 3) : undefined,
+      duracaoDias:
+        effectiveTipo === "temporario" ? Math.max(1, Number(formDuracaoDias) || 3) : undefined,
       estoqueAtual: Number(formEstoqueAtual) || 0,
       estoqueTotal: Number(formEstoqueAtual) || 0,
       alertaEstoqueMinimo: Number(formAlertaMinimo) || 5,
@@ -383,7 +420,6 @@ function App() {
     setScheduleDraft(draft);
   }
 
-  // Passo 2: Após confirmar os horários no Modal, salva ou atualiza no IndexedDB e dispara o Mini-Relatório
   async function handleConfirmScheduleAndSave(confirmedMed: Medication) {
     const targetProfile =
       profileMap.get(confirmedMed.profileId) ?? activeProfileObject ?? profiles[0];
@@ -427,6 +463,9 @@ function App() {
 
     const recordToSave: Medication = {
       ...confirmedMed,
+      corIdentificacao:
+        confirmedMed.corIdentificacao ||
+        getDefaultMedicationColor(confirmedMed.nome, allMedications.length),
       resumoBula: report.resumoBula,
     };
 
@@ -439,13 +478,10 @@ function App() {
     setMessage(
       `✅ [${targetProfile?.nome ?? "Eu"}] "${confirmedMed.nome} ${
         confirmedMed.dosagem
-      }" salvo com horários confirmados (${confirmedMed.horarios.join(
-        " • ",
-      )})! Mini-Relatório IA aberto.`,
+      }" salvo com sigla [${getMedicationAcronym(confirmedMed.nome)}] e horários confirmados!`,
     );
   }
 
-  // Scanner Multimodal de Caixa com Contexto do Perfil
   async function handleScanBoxForNewMedication(options: { file?: File; hint?: string }) {
     setIsScanningBox(true);
     setShowNewMedPanel(true);
@@ -469,10 +505,11 @@ function App() {
 
       const condTratamento =
         targetProfile?.condicaoClinica || scanned.condicaoSugerida || "Acompanhamento Clínico";
+      const assignedColor = getDefaultMedicationColor(scanned.nome, allMedications.length);
 
-      // Preenche os campos visualmente
       setFormNome(scanned.nome);
       setFormDosagem(scanned.dosagem);
+      setFormCorIdentificacao(assignedColor);
       setFormUnidade(scanned.unidade);
       setFormQuantidadePorDose(scanned.quantidadePorDoseSugerida);
       setFormOrigemPrescricao(scanned.origemSugerida);
@@ -486,7 +523,6 @@ function App() {
       setFormAlertaMinimo(scanned.alertaEstoqueMinimoSugerido);
       setFormDuracaoDias(scanned.tipoSugerido === "temporario" ? 3 : 30);
 
-      // Fluxo Rápido Zero Digitação: já salva no perfil ativo e dispara o Mini-Relatório com contexto do perfil
       const report = await fetchMedicationMiniReport({
         nome: scanned.nome,
         dosagem: scanned.dosagem,
@@ -507,6 +543,7 @@ function App() {
         profileId: targetProfile?.id ?? 1,
         nome: scanned.nome,
         dosagem: scanned.dosagem,
+        corIdentificacao: assignedColor,
         unidade: scanned.unidade,
         quantidadePorDose: scanned.quantidadePorDoseSugerida,
         origemPrescricao: scanned.origemSugerida,
@@ -542,7 +579,6 @@ function App() {
     }
   }
 
-  // Reposição de estoque por Foto da Caixa
   async function handleScanBoxForRestock(med: Medication, file?: File) {
     if (!med.id) return;
     setRestockingMedId(med.id);
@@ -562,11 +598,9 @@ function App() {
 
       const addedQty = scanned.quantidadeComprimidos;
       const newStock = med.estoqueAtual + addedQty;
-      const newTotal = Math.max(med.estoqueTotal, newStock);
 
       await database.medications.update(med.id, {
         estoqueAtual: newStock,
-        estoqueTotal: newTotal,
         ultimaReposicaoEm: new Date().toISOString(),
       });
 
@@ -608,9 +642,7 @@ function App() {
       `💊 [${prof?.nome ?? "Eu"}] Dose de ${med.nome} (${formatDoseLabel(
         stepDose,
         med.unidade,
-      )}) registrada às ${new Date().toLocaleTimeString("pt-BR")}. Restam: ${updatedStock} ${
-        med.unidade
-      }.`,
+      )}) marcada como TOMADA às ${new Date().toLocaleTimeString("pt-BR")}. Estoque e KPIs atualizados!`,
     );
 
     if (updatedStock <= med.alertaEstoqueMinimo) {
@@ -678,7 +710,6 @@ function App() {
     setMessage(`Medicamento "${med.nome}" removido.`);
   }
 
-  // Geolocalização GPS + Overpass API para o Mini-Mapa Leaflet
   async function handleLocateNearbyPharmacies() {
     setIsLoadingPharmacies(true);
     setGpsStatus("requesting");
@@ -782,7 +813,7 @@ function App() {
         }}
       />
 
-      {/* Cabeçalho Global "Meu Cuidado Diário" + Relógio em Tempo Real + Seletor Multi-Perfil */}
+      {/* Cabeçalho Global "Meu Cuidado Diário" + Relógio em Tempo Real + Seletor Multi-Perfil (com Editar ✏️ e Excluir 🗑️) */}
       <header className="sticky top-0 z-30 border-b border-emerald-950/10 bg-white/95 backdrop-blur-md">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-8">
           <a
@@ -801,7 +832,7 @@ function App() {
                 Meu Cuidado Diário
               </span>
               <span className="block text-xs text-muted">
-                Gestão Multi-Perfil Familiar, Assistente Clínico IA e Mini-Mapa de Farmácias
+                Gestão Multi-Perfil Familiar, Alta Legibilidade, Assistente IA e Mini-Mapa
               </span>
             </div>
           </a>
@@ -823,12 +854,14 @@ function App() {
           </div>
         </div>
 
-        {/* Barra Fixa de Seleção de Perfil (Eu, Filho, Mãe, + Novo Perfil e Todos) */}
+        {/* Barra Fixa de Seleção e Gerenciamento de Perfis (Editar ✏️ e Excluir 🗑️ em Cascata) */}
         <ProfileSelectorBar
           profiles={profiles}
           selectedProfileId={selectedProfileId}
           onSelectProfile={setSelectedProfileId}
           onCreateProfile={handleCreateProfile}
+          onUpdateProfile={handleUpdateProfile}
+          onDeleteProfile={handleDeleteProfile}
         />
 
         {/* Barra de alternância rápida exclusiva para Mobile */}
@@ -866,6 +899,12 @@ function App() {
       </header>
 
       <div className="mx-auto max-w-7xl px-4 pb-16 pt-6 sm:px-8 sm:pt-8">
+        {/* PAINEL DE RESUMO RÁPIDO DE ALTA LEGIBILIDADE (KPI CARDS) */}
+        <HighReadabilityKpiBar
+          medications={visibleMedications}
+          referenceDate={selectedDate}
+        />
+
         {/* Banner de Ações Rápidas */}
         <section className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-emerald-950/10 bg-white p-5 shadow-card sm:p-6">
           <div>
@@ -881,11 +920,11 @@ function App() {
                   }`}
             </p>
             <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink sm:text-3xl">
-              Dashboard Clínico, Horários Confirmados & Mini-Mapa
+              Dashboard de Alta Legibilidade & Calendário por Siglas
             </h1>
             <p className="mt-1 text-sm text-muted">
-              Prescrições de emergência ou acompanhamento especializado com confirmação prévia de
-              horários e contexto geriátrico/pediátrico.
+              Siglas de 3 letras com cores exclusivas no calendário, leitura facilitada de estoque e
+              confirmação interativa de horários.
             </p>
           </div>
 
@@ -953,10 +992,11 @@ function App() {
               type="button"
               onClick={() => void handleInsertSamples()}
               disabled={isSeeding}
-              className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border-2 border-violet-300 bg-violet-50 px-3.5 py-2 text-xs font-bold text-violet-900 hover:bg-violet-100 disabled:opacity-60"
+              data-testid="seed-trio-btn"
             >
               {isSeeding ? <RefreshCw className="animate-spin" size={14} /> : <Activity size={14} />}
-              Exemplos
+              Carregar Trio (GAR + ESC + DIP)
             </button>
           </div>
         </section>
@@ -1062,7 +1102,7 @@ function App() {
                   👨‍👩‍👧 Próximos Horários da Família em Ordem Cronológica (Visão do Cuidador)
                 </h2>
                 <p className="text-xs text-muted">
-                  Todos os medicamentos ativos agrupados por horário e identificados pelo perfil.
+                  Todos os medicamentos ativos agrupados por horário com suas siglas de 3 letras.
                 </p>
               </div>
             </div>
@@ -1070,10 +1110,19 @@ function App() {
               {chronologicalFamilySchedule.map(({ horario, med, profile }, idx) => (
                 <div
                   key={`${med.id}-${horario}-${idx}`}
-                  className="flex min-w-52 shrink-0 items-center justify-between gap-2 rounded-2xl border border-slate-200/80 bg-canvas px-3.5 py-2.5 text-xs"
+                  className="flex min-w-56 shrink-0 items-center justify-between gap-2 rounded-2xl border border-slate-200/80 bg-canvas px-3.5 py-2.5 text-xs"
                 >
                   <div>
                     <div className="flex items-center gap-1.5">
+                      <span
+                        className="rounded px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-white"
+                        style={{
+                          backgroundColor:
+                            med.corIdentificacao || getDefaultMedicationColor(med.nome, idx),
+                        }}
+                      >
+                        {getMedicationAcronym(med.nome)}
+                      </span>
                       <span
                         className="rounded px-1.5 py-0.5 text-[10px] font-bold text-white"
                         style={{ backgroundColor: profile?.corAvatar ?? "#246b59" }}
@@ -1125,7 +1174,7 @@ function App() {
           </section>
         )}
 
-        {/* Painel de Cadastro de Novo Medicamento com Regras Clínicas + Scanner Multimodal */}
+        {/* Painel de Cadastro de Novo Medicamento com Regras Clínicas + Cor Exclusiva + Scanner Multimodal */}
         {showNewMedPanel && (
           <section
             className="mb-8 rounded-3xl border-2 border-forest/20 bg-white p-5 shadow-card sm:p-7"
@@ -1135,11 +1184,11 @@ function App() {
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
               <div>
                 <h2 id="new-med-heading" className="text-xl font-bold text-ink">
-                  Cadastrar Medicamento (Regras Clínicas & Confirmação de Horários)
+                  Cadastrar Medicamento (Sigla & Cor Exclusiva + Confirmação de Horários)
                 </h2>
                 <p className="text-xs text-muted">
-                  Informe a origem da prescrição, a condição clínica opcional e revise a prévia de
-                  horários antes de salvar.
+                  Informe a origem da prescrição, escolha a cor de identificação para o calendário e
+                  revise os horários.
                 </p>
               </div>
               <button
@@ -1151,7 +1200,6 @@ function App() {
               </button>
             </div>
 
-            {/* Bloco Scanner Multimodal de Caixa & Presets Rápidos para Teste */}
             <div className="mt-4 rounded-2xl border border-emerald-900/15 bg-mint/40 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
@@ -1163,8 +1211,7 @@ function App() {
                       Scanner Multimodal de Caixa & Atalhos Clínicos
                     </h3>
                     <p className="text-xs text-muted">
-                      Tire uma foto da caixa ou preencha rapidamente um cenário clínico para validar a
-                      tela de confirmação de horários.
+                      Tire uma foto da caixa ou preencha rapidamente um cenário clínico.
                     </p>
                   </div>
                 </div>
@@ -1295,7 +1342,7 @@ function App() {
                         Tratamento Especializado / Acompanhamento Contínuo
                       </p>
                       <p className="mt-0.5 text-xs text-muted">
-                        Neurologia, Psiquiatria, Cardiologia (ex: Clonazepam, Gardenal, Donepezila).
+                        Neurologia, Psiquiatria, Cardiologia (ex: Clonazepam, Gardenal, Escitalopram).
                         Ativa controle rigoroso, alerta de não interrupção e marco de 90 dias.
                       </p>
                     </div>
@@ -1358,18 +1405,32 @@ function App() {
                 </div>
               </div>
 
-              {/* CAMPO 3: Dados do Medicamento, Unidades Líquidas/Sólidas e Intervalo */}
+              {/* CAMPO 3: Dados do Medicamento, Cor Exclusiva no Calendário e Posologia */}
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700">
-                    Nome do Medicamento *
+                    Nome do Medicamento *{" "}
+                    {formNome && (
+                      <span
+                        className="ml-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-extrabold text-white"
+                        style={{ backgroundColor: formCorIdentificacao }}
+                      >
+                        Sigla: {getMedicationAcronym(formNome)}
+                      </span>
+                    )}
                   </label>
                   <input
                     type="text"
                     required
                     value={formNome}
-                    onChange={(e) => setFormNome(e.target.value)}
-                    placeholder="Ex: Dipirona, Clonazepam..."
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setFormNome(val);
+                      setFormCorIdentificacao(
+                        getDefaultMedicationColor(val, allMedications.length),
+                      );
+                    }}
+                    placeholder="Ex: Dipirona, Escitalopram..."
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     data-testid="input-med-nome"
                   />
@@ -1384,7 +1445,7 @@ function App() {
                     required
                     value={formDosagem}
                     onChange={(e) => setFormDosagem(e.target.value)}
-                    placeholder="Ex: 500mg/ml, 2mg, 100mg"
+                    placeholder="Ex: 500mg/ml, 10mg, 2mg"
                     className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                     data-testid="input-med-dosagem"
                   />
@@ -1487,22 +1548,24 @@ function App() {
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700">
-                    Tipo de Receita / Controle
+                    Cor Exclusiva da Sigla no Calendário
                   </label>
-                  <select
-                    value={formTipoReceita}
-                    onChange={(e) => {
-                      const val = e.target.value as PrescriptionType;
-                      setFormTipoReceita(val);
-                      setFormControlado(val !== "simples");
-                    }}
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                  >
-                    <option value="simples">Simples / Isento</option>
-                    <option value="branca_2_vias">Branca 2 Vias (Controlado C1)</option>
-                    <option value="azul">Notificação B — Receita Azul (Tarja Preta)</option>
-                    <option value="amarela">Notificação A — Receita Amarela</option>
-                  </select>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {MEDICATION_COLOR_PALETTE.map((c) => (
+                      <button
+                        key={c.hex}
+                        type="button"
+                        onClick={() => setFormCorIdentificacao(c.hex)}
+                        title={c.label}
+                        className={`h-6 w-6 rounded-full border-2 transition ${
+                          formCorIdentificacao === c.hex
+                            ? "scale-115 border-slate-900"
+                            : "border-transparent"
+                        }`}
+                        style={{ backgroundColor: c.hex }}
+                      />
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -1533,22 +1596,22 @@ function App() {
           className="grid gap-8 lg:grid-cols-12 lg:items-start"
           data-testid="responsive-split-layout"
         >
-          {/* COLUNA ESQUERDA (7 cols no Desktop): Medicamentos + Mini-Mapa Interativo Leaflet */}
+          {/* COLUNA ESQUERDA (7 cols no Desktop): Cards de Medicações com Leitura Facilitada + Mini-Mapa */}
           <div
             className={`space-y-6 lg:col-span-7 ${
               mobileTab === "calendar" ? "hidden lg:block" : "block"
             }`}
           >
-            {/* Lista de Medicamentos (Dashboard de Doses & Estoque) */}
+            {/* Lista de Medicamentos (Leitura Facilitada e Alta Legibilidade) */}
             <section aria-labelledby="medications-heading">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 id="medications-heading" className="text-xl font-bold tracking-tight">
-                    Medicamentos Cadastrados ({visibleMedications.length})
+                    Lista de Medicações — Leitura Facilitada ({visibleMedications.length})
                   </h2>
                   <p className="text-xs text-muted">
-                    Edite intervalos/horários, registre doses ou fotografe a caixa para repor o
-                    estoque.
+                    Alto contraste, barra de progresso semafórica (Verde/Amarelo/Vermelho) e
+                    atualização instantânea dos KPIs.
                   </p>
                 </div>
               </div>
@@ -1562,27 +1625,42 @@ function App() {
                     Nenhum medicamento cadastrado neste perfil
                   </h3>
                   <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted">
-                    Clique em <strong>“Novo Medicamento”</strong> ou{" "}
-                    <strong>“📷 Fotografar Caixa”</strong> acima para cadastrar uma prescrição de
-                    emergência ou tratamento especializado.
+                    Clique em <strong>“Carregar Trio (GAR + ESC + DIP)”</strong> ou{" "}
+                    <strong>“Novo Medicamento”</strong> acima para visualizar as siglas coloridas e
+                    os KPIs.
                   </p>
                 </div>
               ) : (
                 <div className="grid gap-4">
-                  {visibleMedications.map((medication) => {
+                  {visibleMedications.map((medication, idx) => {
                     const prof = profileMap.get(medication.profileId);
+                    const medColor =
+                      medication.corIdentificacao ||
+                      getDefaultMedicationColor(medication.nome, idx);
+                    const acronym = getMedicationAcronym(medication.nome);
                     const isLowStock = medication.estoqueAtual <= medication.alertaEstoqueMinimo;
                     const daysUsed = daysSinceDate(medication.dataInicio, selectedDate);
                     const isContinuousOrSpecialized =
                       medication.tipo === "continuo" ||
                       medication.origemPrescricao === "especializado";
                     const reached90d = isContinuousOrSpecialized && daysUsed >= 90;
+
+                    const baseCapacity = Math.max(
+                      medication.estoqueAtual,
+                      medication.estoqueTotal || 20,
+                    );
                     const stockPercent = Math.min(
                       100,
-                      Math.round(
-                        (medication.estoqueAtual / Math.max(1, medication.estoqueTotal)) * 100,
-                      ),
+                      Math.round((medication.estoqueAtual / Math.max(1, baseCapacity)) * 100),
                     );
+
+                    // Cor Semafórica da Barra de Progresso (Verde / Amarelo / Vermelho)
+                    const progressColorClass = isLowStock
+                      ? "bg-rose-600"
+                      : stockPercent <= 50
+                        ? "bg-amber-500"
+                        : "bg-emerald-600";
+
                     const doseLabel = formatDoseLabel(
                       medication.quantidadePorDose || 1,
                       medication.unidade || "comprimido",
@@ -1592,77 +1670,84 @@ function App() {
                       medication.estoqueAtual /
                         Math.max(0.1, tomadasPorDia * (medication.quantidadePorDose || 1)),
                     );
+                    const diasRestantesTemp = Math.max(
+                      0,
+                      (medication.duracaoDias ?? 3) - daysUsed,
+                    );
 
                     return (
                       <article
                         key={medication.id}
-                        className={`rounded-3xl border bg-white p-5 shadow-card transition sm:p-6 ${
+                        className={`rounded-3xl border-2 bg-white p-5 shadow-card transition sm:p-6 ${
                           isLowStock
-                            ? "border-amber-300 ring-1 ring-amber-200"
+                            ? "border-rose-300 ring-1 ring-rose-200"
                             : "border-emerald-950/10"
                         }`}
                         data-testid={`medication-card-${medication.nome.toLowerCase()}`}
                       >
                         <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="flex items-start gap-3">
+                          <div className="flex items-start gap-3.5">
+                            {/* Badge Grande de Sigla de 3 Letras com Cor Exclusiva */}
                             <span
-                              className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-white shadow-2xs"
-                              style={{ backgroundColor: prof?.corAvatar ?? "#246b59" }}
+                              className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl font-mono text-base font-extrabold tracking-wider text-white shadow-sm"
+                              style={{ backgroundColor: medColor }}
+                              title={`Sigla no calendário: ${acronym}`}
                             >
-                              <Pill size={22} />
+                              {acronym}
                             </span>
+
                             <div>
-                              <div className="flex flex-wrap items-center gap-1.5">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <span
                                   className="rounded-md px-2 py-0.5 text-xs font-extrabold text-white"
                                   style={{ backgroundColor: prof?.corAvatar ?? "#246b59" }}
                                 >
                                   [{prof?.nome ?? "Eu"}]
                                 </span>
-                                <h3 className="text-lg font-bold text-ink">{medication.nome}</h3>
-                                <span className="rounded-lg bg-mint px-2 py-0.5 text-xs font-bold text-forest">
-                                  {medication.dosagem} ({doseLabel})
+                                {/* Nome + Dosagem em Fonte Grande e Legível */}
+                                <h3 className="text-xl font-extrabold tracking-tight text-ink sm:text-2xl">
+                                  {medication.nome}{" "}
+                                  <span className="text-forest">{medication.dosagem}</span>
+                                </h3>
+                              </div>
+
+                              {/* Frequência em Destaque Legível */}
+                              <p
+                                className="mt-1.5 text-sm font-extrabold text-slate-800 sm:text-base"
+                                data-testid={`med-interval-summary-${medication.nome.toLowerCase()}`}
+                              >
+                                ⏰{" "}
+                                {formatIntervalSummary(
+                                  medication.intervaloHoras,
+                                  medication.tipo,
+                                  medication.duracaoDias,
+                                )}{" "}
+                                <span className="font-mono text-forest">
+                                  ({medication.horarios.join(" • ")})
                                 </span>
+                              </p>
+
+                              <div className="mt-1.5 flex flex-wrap items-center gap-2">
                                 <span
-                                  className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                                  className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${
                                     medication.origemPrescricao === "emergencia"
                                       ? "bg-rose-100 text-rose-900"
                                       : "bg-indigo-100 text-indigo-900"
                                   }`}
                                 >
                                   {medication.origemPrescricao === "emergencia"
-                                    ? "🚑 Emergência / PS"
-                                    : "🩺 Tratamento Especializado"}
+                                    ? "🚑 Emergência / Temporário"
+                                    : "🩺 Uso Contínuo / Especializado"}
                                 </span>
                                 {medication.condicaoTratamento && (
                                   <span
-                                    className="rounded-full bg-violet-100 px-2.5 py-0.5 text-xs font-semibold text-violet-900"
+                                    className="rounded-full bg-violet-100 px-2.5 py-0.5 text-xs font-bold text-violet-900"
                                     data-testid={`med-condition-badge-${medication.nome.toLowerCase()}`}
                                   >
                                     🎯 {medication.condicaoTratamento}
                                   </span>
                                 )}
                               </div>
-
-                              {/* Demonstração Clara e Explícita de Intervalo e Duração no Card */}
-                              <p
-                                className="mt-1.5 text-xs font-extrabold text-forest sm:text-sm"
-                                data-testid={`med-interval-summary-${medication.nome.toLowerCase()}`}
-                              >
-                                ⏱️{" "}
-                                {formatIntervalSummary(
-                                  medication.intervaloHoras,
-                                  medication.tipo,
-                                  medication.duracaoDias,
-                                )}
-                              </p>
-
-                              <p className="mt-0.5 text-xs text-muted">
-                                Horários confirmados:{" "}
-                                <strong className="font-mono text-ink">
-                                  {medication.horarios.join(" • ")}
-                                </strong>
-                              </p>
                             </div>
                           </div>
 
@@ -1687,44 +1772,50 @@ function App() {
                           </div>
                         </div>
 
-                        {/* Barra de Progresso de Estoque e Autonomia (Comprimidos ou Frasco ml/gotas) */}
-                        <div className="mt-4 rounded-2xl bg-canvas p-3.5">
-                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                            <span className="font-semibold text-ink">
-                              Estoque Atual:{" "}
-                              <strong className="text-sm font-extrabold text-forest">
-                                {medication.estoqueAtual} {medication.unidade}
-                              </strong>{" "}
-                              / {medication.estoqueTotal} {medication.unidade} • Autonomia:{" "}
-                              <strong>~{diasAutonomia} dia(s)</strong>
-                            </span>
-                            <span
-                              className={`font-semibold ${
-                                isLowStock ? "text-amber-800" : "text-muted"
-                              }`}
-                            >
-                              {isLowStock
-                                ? `⚠️ Estoque baixo (mínimo: ${medication.alertaEstoqueMinimo} ${medication.unidade})`
-                                : `Alerta em ${medication.alertaEstoqueMinimo} ${medication.unidade}`}
-                            </span>
+                        {/* Bloco de Alta Legibilidade: Estoque Atual + Equivalência em Caixas + Barra de Progresso Colorida */}
+                        <div className="mt-4 rounded-2xl border border-slate-200/80 bg-canvas p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                                Estoque Disponível:
+                              </span>
+                              <p
+                                className="text-base font-extrabold text-ink sm:text-lg"
+                                data-testid={`med-stock-boxes-${medication.nome.toLowerCase()}`}
+                              >
+                                📦{" "}
+                                {formatBoxEquivalence(
+                                  medication.estoqueAtual,
+                                  medication.estoqueTotal,
+                                  medication.unidade,
+                                )}
+                              </p>
+                            </div>
+
+                            <div className="text-right">
+                              <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
+                                Tempo Restante / Autonomia:
+                              </span>
+                              <p className="text-sm font-extrabold text-forest sm:text-base">
+                                {isContinuousOrSpecialized
+                                  ? `⏳ Dura mais ${diasAutonomia} ${
+                                      diasAutonomia === 1 ? "dia" : "dias"
+                                    }`
+                                  : `⏳ Faltam ${diasRestantesTemp} ${
+                                      diasRestantesTemp === 1 ? "dia" : "dias"
+                                    } para terminar`}
+                              </p>
+                            </div>
                           </div>
-                          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+
+                          {/* Barra de Progresso Semafórica (Verde / Amarelo / Vermelho) */}
+                          <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-slate-200">
                             <div
-                              className={`h-full transition-all ${
-                                isLowStock ? "bg-amber-500" : "bg-forest"
-                              }`}
+                              className={`h-full transition-all duration-300 ${progressColorClass}`}
                               style={{ width: `${stockPercent}%` }}
                             />
                           </div>
                         </div>
-
-                        {medication.origemPrescricao === "emergencia" && medication.duracaoDias && (
-                          <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50/75 px-3.5 py-2 text-xs font-medium text-rose-950">
-                            🚑 <strong>Prescrição de Emergência:</strong> ciclo de{" "}
-                            {medication.duracaoDias} dias. Não estenda o uso sem reavaliação e
-                            retorne ao médico se os sintomas persistirem após o término.
-                          </div>
-                        )}
 
                         {reached90d && (
                           <div className="mt-3 rounded-2xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-950">
@@ -1738,27 +1829,26 @@ function App() {
                             type="button"
                             onClick={() => void handleTakeDose(medication)}
                             disabled={medication.estoqueAtual <= 0}
-                            className="inline-flex items-center gap-1.5 rounded-xl bg-forest px-3.5 py-2 text-xs font-bold text-white shadow-2xs transition hover:bg-emerald-900 disabled:opacity-50"
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-forest px-4 py-2 text-xs font-extrabold text-white shadow-2xs transition hover:bg-emerald-900 disabled:opacity-50 sm:text-sm"
+                            data-testid={`take-dose-btn-${medication.nome.toLowerCase()}`}
                           >
-                            <Check size={14} />
+                            <Check size={16} />
                             Tomar Dose ({doseLabel})
                           </button>
 
-                          {/* Botão para Editar Horários / Posologia passando pelo Modal de Confirmação */}
                           <button
                             type="button"
                             onClick={() => {
                               setIsEditingExistingSchedule(true);
                               setScheduleDraft(medication);
                             }}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-900/20 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-forest transition hover:bg-mint"
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-900/20 bg-emerald-50 px-3 py-2 text-xs font-bold text-forest transition hover:bg-mint"
                             data-testid={`edit-schedule-btn-${medication.nome.toLowerCase()}`}
                           >
                             <AlarmClock size={14} />
                             ✏️ Editar Horários
                           </button>
 
-                          {/* Botão + Repor Estoque via Foto da Caixa */}
                           <button
                             type="button"
                             disabled={restockingMedId === medication.id}
@@ -1813,7 +1903,7 @@ function App() {
               )}
             </section>
 
-            {/* Mini-Mapa Interativo de Farmácias e Drogarias Próximas (GPS + Leaflet + Overpass API) */}
+            {/* Mini-Mapa Interativo de Farmácias e Drogarias Próximas */}
             <div ref={pharmacyMapSectionRef}>
               <PharmacyMiniMap
                 pharmaciesData={pharmaciesData}
@@ -1838,7 +1928,7 @@ function App() {
             </div>
           </div>
 
-          {/* COLUNA DIREITA (5 cols no Desktop): Calendário Unificado Multi-Perfil + Fila de Alertas */}
+          {/* COLUNA DIREITA (5 cols no Desktop): Calendário Unificado com Siglas de 3 Letras + Fila de Alertas */}
           <div
             className={`space-y-6 lg:col-span-5 ${
               mobileTab === "dashboard" ? "hidden lg:block" : "block"

@@ -69,6 +69,7 @@ class MedicationCreate(BaseModel):
     perfilNome: str = "Eu"
     nome: str = Field(min_length=1, max_length=160)
     dosagem: str = Field(min_length=1, max_length=100)
+    corIdentificacao: str | None = "#2563eb"
     unidade: MedicationUnit = MedicationUnit.COMPRIMIDO
     quantidadePorDose: float = Field(default=1.0, gt=0)
     origemPrescricao: PrescriptionOrigin = PrescriptionOrigin.ESPECIALIZADO

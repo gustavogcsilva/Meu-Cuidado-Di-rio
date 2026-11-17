@@ -39,6 +39,7 @@ export interface Medication {
   profileId: number;
   nome: string;
   dosagem: string;
+  corIdentificacao?: string;
   unidade: MedicationUnit;
   quantidadePorDose: number;
   origemPrescricao: PrescriptionOrigin;
