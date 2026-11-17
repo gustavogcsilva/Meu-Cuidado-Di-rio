@@ -249,6 +249,43 @@ class SchedulerStatusResponse(BaseModel):
     proximoDisparo: str | None = None
 
 
+class OnlinePharmacyLink(BaseModel):
+    farmacia: str
+    urlBusca: str
+    exigeReceitaFisica: bool
+    observacao: str | None = None
+
+
+class ExtractedPrescriptionItem(BaseModel):
+    nome: str
+    dosagem: str
+    unidade: MedicationUnit = MedicationUnit.COMPRIMIDO
+    quantidadePorDose: float = 1.0
+    origemPrescricao: PrescriptionOrigin = PrescriptionOrigin.ESPECIALIZADO
+    condicaoTratamento: str | None = None
+    tipo: MedicationType = MedicationType.CONTINUO
+    controlado: bool = False
+    tipoReceita: PrescriptionType = PrescriptionType.SIMPLES
+    intervaloHoras: int = 8
+    horarios: list[str] = Field(default_factory=lambda: ["08:00", "16:00", "23:00"])
+    duracaoDias: int | None = None
+    estoqueSugerido: int = 30
+    alertaEstoqueMinimo: int = 10
+    paraQueServe: str
+    comoTomar: str
+    alertasSeguranca: list[str] = Field(default_factory=list)
+    ondeComprarOnline: list[OnlinePharmacyLink] = Field(default_factory=list)
+
+
+class PharmacistConsultResponse(BaseModel):
+    perfilConsiderado: str
+    resumoConsulta: str
+    itensIdentificados: list[ExtractedPrescriptionItem] = Field(default_factory=list)
+    farmaciasFisicasProximas: list[NearbyPharmacy] = Field(default_factory=list)
+    alertasGerais: list[str] = Field(default_factory=list)
+    geradoEm: datetime
+
+
 class HealthResponse(BaseModel):
     status: str
     app: str

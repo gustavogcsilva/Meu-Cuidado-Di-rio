@@ -1,6 +1,7 @@
 import type {
   AutomatedAlertItem,
   BoxScanResult,
+  ExtractedPrescriptionItem,
   Medication,
   MedicationBulaSummary,
   MedicationMiniReport,
@@ -9,6 +10,7 @@ import type {
   NearbyPharmaciesResponse,
   NearbyPharmacy,
   PatientProfile,
+  PharmacistConsultResponse,
   PrescriptionOrigin,
   PrescriptionType,
 } from "../types/medication";
@@ -1140,4 +1142,154 @@ export async function askBulaAssistant(options: {
     alertasSeguranca: p?.condicaoClinica ? [`Condição clínica monitorada: ${p.condicaoClinica}`] : [],
   };
 }
+
+export async function consultPharmacistAgent(options: {
+  pergunta?: string;
+  file?: File;
+  perfil?: PatientProfile;
+  medicamentos?: Medication[];
+  lat?: number;
+  lng?: number;
+}): Promise<PharmacistConsultResponse> {
+  const formData = new FormData();
+  if (options.pergunta) formData.append("pergunta", options.pergunta);
+  if (options.file) formData.append("file", options.file);
+  if (options.lat !== undefined) formData.append("lat", String(options.lat));
+  if (options.lng !== undefined) formData.append("lng", String(options.lng));
+
+  if (options.perfil) {
+    formData.append(
+      "perfil",
+      JSON.stringify({
+        id: options.perfil.id,
+        nome: options.perfil.nome,
+        parentesco: options.perfil.parentesco,
+        idade: options.perfil.idade ?? null,
+        pesoKg: options.perfil.pesoKg ?? null,
+        condicaoClinica: options.perfil.condicaoClinica ?? null,
+      }),
+    );
+  }
+
+  formData.append(
+    "medicamentosCadastrados",
+    JSON.stringify(
+      (options.medicamentos ?? []).map((m) => ({
+        nome: m.nome,
+        dosagem: m.dosagem,
+        tipo: m.tipo,
+        controlado: m.controlado,
+        tipoReceita: m.tipoReceita,
+        intervaloHoras: m.intervaloHoras,
+        horarios: m.horarios,
+        condicaoTratamento: m.condicaoTratamento ?? null,
+      })),
+    ),
+  );
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/pharmacist/consult`, {
+      method: "POST",
+      body: formData,
+    });
+    if (response.ok) {
+      return (await response.json()) as PharmacistConsultResponse;
+    }
+  } catch {
+    // Fallback local
+  }
+
+  const p = options.perfil;
+  const pName = p?.nome ?? "Eu";
+  const pDesc = p
+    ? `${p.nome} (${p.parentesco}${p.idade ? `, ${p.idade} anos` : ""}${
+        p.condicaoClinica ? `, Condição: ${p.condicaoClinica}` : ""
+      })`
+    : "Eu";
+
+  // Identificação básica no fallback offline
+  const queryStr = `${options.pergunta ?? ""} ${options.file?.name ?? ""}`.toLowerCase();
+  const sampleItems: ExtractedPrescriptionItem[] = [];
+
+  if (queryStr.includes("clonazepam") || queryStr.includes("rivotril")) {
+    sampleItems.push({
+      nome: "Clonazepam",
+      dosagem: "2mg",
+      unidade: "comprimido",
+      quantidadePorDose: 1,
+      origemPrescricao: "especializado",
+      condicaoTratamento: p?.condicaoClinica || "Ansiedade / Sono",
+      tipo: "continuo",
+      controlado: true,
+      tipoReceita: "azul",
+      intervaloHoras: 24,
+      horarios: ["21:00"],
+      duracaoDias: null,
+      estoqueSugerido: 30,
+      alertaEstoqueMinimo: 10,
+      paraQueServe: "Ansiolítico e anticonvulsivante benzodiazepínico para transtornos de ansiedade e sono.",
+      comoTomar: "Tomar 1 comprimido à noite (21:00).",
+      alertasSeguranca: [
+        "⚠️ Uso Contínuo: NÃO interrompa abruptamente por conta própria.",
+        "Evite dirigir veículos ou consumir bebidas alcoólicas.",
+      ],
+      ondeComprarOnline: [
+        {
+          farmacia: "Drogasil",
+          urlBusca: "https://www.drogasil.com.br/search?w=Clonazepam",
+          exigeReceitaFisica: true,
+          observacao: "Tarja preta: retenção de receita B azul na loja.",
+        },
+        {
+          farmacia: "Consulta Remédios",
+          urlBusca: "https://consultaremedios.com.br/buscar?termo=Clonazepam",
+          exigeReceitaFisica: true,
+          observacao: "Comparador de preços.",
+        },
+      ],
+    });
+  }
+
+  if (queryStr.includes("dipirona")) {
+    sampleItems.push({
+      nome: "Dipirona",
+      dosagem: "500mg/ml",
+      unidade: "gotas",
+      quantidadePorDose: 15,
+      origemPrescricao: "emergencia",
+      condicaoTratamento: "Dor / Febre",
+      tipo: "temporario",
+      controlado: false,
+      tipoReceita: "simples",
+      intervaloHoras: 8,
+      horarios: ["08:00", "16:00", "23:00"],
+      duracaoDias: 3,
+      estoqueSugerido: 200,
+      alertaEstoqueMinimo: 30,
+      paraQueServe: "Analgésico e antitérmico para alívio de dor e febre aguda.",
+      comoTomar: "Tomar 15 gotas de 8 em 8 horas por 3 dias.",
+      alertasSeguranca: ["Contraindicado para alérgicos a pirazolonas."],
+      ondeComprarOnline: [
+        {
+          farmacia: "Drogasil",
+          urlBusca: "https://www.drogasil.com.br/search?w=Dipirona",
+          exigeReceitaFisica: false,
+          observacao: "Venda livre.",
+        },
+      ],
+    });
+  }
+
+  return {
+    perfilConsiderado: pDesc,
+    resumoConsulta: sampleItems.length > 0
+      ? `Olá! Sou o **🧑‍⚕️ Meu Farmacêutico**, assistente virtual de **${pName}**. Identifiquei ${sampleItems.length} medicação(ões) com orientações, onde comprar e opção de cadastro direto.`
+      : `Olá! Sou o **🧑‍⚕️ Meu Farmacêutico** de **${pName}**. Envie uma foto ou arquivo PDF da sua receita para que eu analise a posologia, interações e farmácias online/locais.`,
+    itensIdentificados: sampleItems,
+    farmaciasFisicasProximas: [],
+    alertasGerais: [],
+    geradoEm: new Date().toISOString(),
+  };
+}
+
 

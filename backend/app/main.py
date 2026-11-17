@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.schemas import (
     BoxScanResponse,
+    ChatMedicationContext,
     ChatRequest,
     ChatResponse,
     EvaluateAlertsRequest,
@@ -20,6 +21,7 @@ from app.schemas import (
     MedicationMiniReportResponse,
     NearbyPharmaciesResponse,
     PatientProfileContext,
+    PharmacistConsultResponse,
     PushWebhookSubscriptionRequest,
     SchedulerStatusResponse,
 )
@@ -29,6 +31,7 @@ from app.services.assistant_service import (
     generate_medication_mini_report,
     scan_medication_box,
 )
+from app.services.pharmacist_agent import consult_pharmacist_agent
 from app.services.pharmacy_service import (
     find_nearby_pharmacies,
     search_pharmacies_by_location_query,
@@ -161,6 +164,74 @@ async def assistant_medication_report(
 )
 async def assistant_bula_chat(payload: ChatRequest) -> ChatResponse:
     return await answer_bula_chat(payload)
+
+
+@app.post(
+    "/api/pharmacist/consult",
+    response_model=PharmacistConsultResponse,
+    tags=["pharmacist"],
+    summary="Agente Virtual 'Meu Farmacêutico' (Chat Multimodal, Foto, Anexo de PDF e Onde Comprar)",
+)
+async def pharmacist_consult(
+    request: Request,
+    pergunta: str = Form(default=""),
+    file: UploadFile | None = File(default=None),
+    perfil: str = Form(default=""),
+    medicamentosCadastrados: str = Form(default=""),
+    lat: float | None = Form(default=None),
+    lng: float | None = Form(default=None),
+) -> PharmacistConsultResponse:
+    file_bytes = b""
+    filename = ""
+    mime_type = ""
+    perfil_ctx: PatientProfileContext | None = None
+    meds_list: list[ChatMedicationContext] = []
+
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            pergunta = str(body.get("pergunta") or pergunta)
+            if body.get("perfil"):
+                perfil_ctx = PatientProfileContext.model_validate(body["perfil"])
+            raw_meds = body.get("medicamentosCadastrados") or []
+            for item in raw_meds:
+                meds_list.append(ChatMedicationContext.model_validate(item))
+            lat = body.get("lat", lat)
+            lng = body.get("lng", lng)
+        except Exception:
+            pass
+    else:
+        if file is not None:
+            filename = file.filename or ""
+            mime_type = file.content_type or ""
+            file_bytes = await file.read()
+
+        if perfil.strip():
+            try:
+                perfil_ctx = PatientProfileContext.model_validate(json.loads(perfil))
+            except Exception:
+                pass
+
+        if medicamentosCadastrados.strip():
+            try:
+                parsed = json.loads(medicamentosCadastrados)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        meds_list.append(ChatMedicationContext.model_validate(item))
+            except Exception:
+                pass
+
+    return await consult_pharmacist_agent(
+        pergunta=pergunta,
+        file_bytes=file_bytes,
+        filename=filename,
+        mime_type=mime_type,
+        perfil=perfil_ctx,
+        medicamentos_cadastrados=meds_list,
+        lat=lat,
+        lng=lng,
+    )
 
 
 @app.get(

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   AlertTriangle,
   Baby,
@@ -145,6 +145,19 @@ export function ProfileSelectorBar({
       );
     }
   }
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setModalMode("closed");
+        setConfirmDeleteTarget(null);
+      }
+    }
+    if (modalMode !== "closed" || confirmDeleteTarget !== null) {
+      window.addEventListener("keydown", handleKeyDown);
+      return () => window.removeEventListener("keydown", handleKeyDown);
+    }
+  }, [modalMode, confirmDeleteTarget]);
 
   return (
     <>
@@ -311,7 +324,7 @@ export function ProfileSelectorBar({
       {/* Modal para Criar ou Editar Perfil Familiar / Dependente */}
       {modalMode !== "closed" && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
           data-testid="profile-form-modal"
@@ -543,7 +556,7 @@ export function ProfileSelectorBar({
       {/* Modal de Confirmação Explícita de Exclusão em Cascata de Perfil */}
       {confirmDeleteTarget && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
           data-testid="confirm-delete-profile-modal"

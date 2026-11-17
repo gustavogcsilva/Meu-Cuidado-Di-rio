@@ -31,6 +31,9 @@ import { ProfileSelectorBar, getKinshipEmoji } from "./components/ProfileSelecto
 import { RealTimeClock } from "./components/RealTimeClock";
 import { ScheduleConfirmationModal } from "./components/ScheduleConfirmationModal";
 import { UnifiedCalendar } from "./components/UnifiedCalendar";
+import { QuickDoseBar } from "./components/QuickDoseBar";
+import { DoseVerificationBanner } from "./components/DoseVerificationBanner";
+import { PharmacistChatModal } from "./components/PharmacistChatModal";
 import {
   MEDICATION_COLOR_PALETTE,
   database,
@@ -39,6 +42,7 @@ import {
   getDefaultMedicationColor,
   getMedicationAcronym,
 } from "./db/database";
+import { storageRepository } from "./services/storageRepository";
 import { insertSampleMedications } from "./db/seed";
 import {
   TRIMESTRAL_ALERT_TEXT,
@@ -57,6 +61,8 @@ import {
 import type {
   AutomatedAlertItem,
   ChatHistoryEntry,
+  DoseLog,
+  ExtractedPrescriptionItem,
   Medication,
   MedicationMiniReport,
   MedicationType,
@@ -141,8 +147,10 @@ function App() {
   // Pop-up automático de Mini-Relatório Inteligente
   const [activeMiniReport, setActiveMiniReport] = useState<MedicationMiniReport | null>(null);
 
-  // Chat Assistente de Bula por Perfil
+  // Chat Assistente de Bula por Perfil e Agente Farmacêutico Virtual
   const [showChatPanel, setShowChatPanel] = useState(false);
+  const [showPharmacistModal, setShowPharmacistModal] = useState(false);
+  const [doseLogs, setDoseLogs] = useState<DoseLog[]>([]);
   const [chatQuestion, setChatQuestion] = useState("");
   const [chatHistory, setChatHistory] = useState<ChatHistoryEntry[]>([]);
   const [isAskingChat, setIsAskingChat] = useState(false);
@@ -162,19 +170,22 @@ function App() {
   const [backendConnected, setBackendConnected] = useState(false);
 
   const loadAllData = useCallback(async () => {
-    const ensuredProfiles = await ensureDefaultProfiles();
+    const ensuredProfiles = await storageRepository.getProfiles();
     setProfiles(ensuredProfiles);
 
-    const list = await database.medications.orderBy("nome").toArray();
+    const list = await storageRepository.getMedications();
     setAllMedications(list);
+
+    const logs = await storageRepository.getDoseLogs();
+    setDoseLogs(logs);
 
     const alertResult = await syncBackendAlerts(list, ensuredProfiles, selectedDate);
     setAlertsQueue(alertResult.alertas);
     setSchedulerJobsCount(alertResult.jobsAgendados);
     setBackendConnected(alertResult.backendAtivo);
 
-    const history = await database.chat_history.orderBy("timestamp").reverse().limit(12).toArray();
-    setChatHistory(history.reverse());
+    const history = await storageRepository.getChatHistory(undefined, 12);
+    setChatHistory(history);
   }, [selectedDate]);
 
   useEffect(() => {
@@ -214,6 +225,17 @@ function App() {
     }
     return profileMap.get(formProfileId) ?? profiles[0];
   }, [selectedProfileId, profileMap, formProfileId, profiles]);
+
+  const mainUserProfile = useMemo(() => {
+    return profiles.find((p) => p.parentesco === "proprio") ?? profiles[0];
+  }, [profiles]);
+
+  const greetingName = useMemo(() => {
+    if (selectedProfileId !== "all") {
+      return activeProfileObject?.nome ?? mainUserProfile?.nome ?? "Cuidador";
+    }
+    return mainUserProfile?.nome ?? "Cuidador";
+  }, [selectedProfileId, activeProfileObject, mainUserProfile]);
 
   const visibleMedications = useMemo(() => {
     if (selectedProfileId === "all") return allMedications;
@@ -265,9 +287,9 @@ function App() {
     }
   }, [pharmaciesData]);
 
-  // Gerenciamento Completo de Perfis: Criar, Editar e Excluir em Cascata
+  // Gerenciamento Completo de Perfis: Criar, Editar e Excluir em Cascata via StorageRepository
   async function handleCreateProfile(newProfileData: Omit<PatientProfile, "id">) {
-    const newId = await database.profiles.add(newProfileData);
+    const newId = await storageRepository.createProfile(newProfileData);
     await loadAllData();
     setSelectedProfileId(newId);
     setMessage(
@@ -279,21 +301,14 @@ function App() {
 
   async function handleUpdateProfile(updatedProfile: PatientProfile) {
     if (!updatedProfile.id) return;
-    await database.profiles.update(updatedProfile.id, {
-      nome: updatedProfile.nome,
-      parentesco: updatedProfile.parentesco,
-      idade: updatedProfile.idade,
-      pesoKg: updatedProfile.pesoKg,
-      condicaoClinica: updatedProfile.condicaoClinica,
-      corAvatar: updatedProfile.corAvatar,
-    });
+    await storageRepository.updateProfile(updatedProfile);
     await loadAllData();
     setMessage(`✏️ Perfil "${updatedProfile.nome}" atualizado com sucesso!`);
   }
 
   async function handleDeleteProfile(profileId: number) {
     const targetName = profileMap.get(profileId)?.nome ?? "Perfil";
-    const { deletedMeds, remainingProfiles } = await deleteProfileCascade(profileId);
+    const { deletedMeds, remainingProfiles } = await storageRepository.deleteProfileCascade(profileId);
     await loadAllData();
     if (selectedProfileId === profileId) {
       setSelectedProfileId(remainingProfiles[0]?.id ?? "all");
@@ -430,7 +445,7 @@ function App() {
       .filter((n) => n.toLowerCase() !== confirmedMed.nome.toLowerCase());
 
     if (isEditingExistingSchedule && confirmedMed.id) {
-      await database.medications.update(confirmedMed.id, {
+      await storageRepository.updateMedication(confirmedMed.id, {
         intervaloHoras: confirmedMed.intervaloHoras,
         horarios: confirmedMed.horarios,
         duracaoDias: confirmedMed.duracaoDias,
@@ -469,7 +484,7 @@ function App() {
       resumoBula: report.resumoBula,
     };
 
-    await database.medications.add(recordToSave);
+    await storageRepository.createMedication(recordToSave);
     await loadAllData();
 
     setScheduleDraft(null);
@@ -539,7 +554,7 @@ function App() {
         perfil: targetProfile,
       });
 
-      await database.medications.add({
+      await storageRepository.createMedication({
         profileId: targetProfile?.id ?? 1,
         nome: scanned.nome,
         dosagem: scanned.dosagem,
@@ -599,7 +614,7 @@ function App() {
       const addedQty = scanned.quantidadeComprimidos;
       const newStock = med.estoqueAtual + addedQty;
 
-      await database.medications.update(med.id, {
+      await storageRepository.updateMedication(med.id, {
         estoqueAtual: newStock,
         ultimaReposicaoEm: new Date().toISOString(),
       });
@@ -626,16 +641,7 @@ function App() {
     const nowIso = new Date().toISOString();
     const prof = profileMap.get(med.profileId);
 
-    await database.transaction("rw", database.medications, database.dose_logs, async () => {
-      await database.medications.update(med.id!, { estoqueAtual: updatedStock });
-      await database.dose_logs.add({
-        profileId: med.profileId,
-        medicationId: med.id!,
-        dataHoraPrevista: nowIso,
-        dataHoraTomada: nowIso,
-        status: "tomado",
-      });
-    });
+    await storageRepository.recordDoseTaken(med.profileId, med.id!, nowIso);
 
     await loadAllData();
     setMessage(
@@ -653,7 +659,7 @@ function App() {
   async function handleSimulateLowStock(med: Medication) {
     if (!med.id) return;
     const lowValue = Math.max(2, Math.min(5, med.alertaEstoqueMinimo));
-    await database.medications.update(med.id, { estoqueAtual: lowValue });
+    await storageRepository.updateMedication(med.id, { estoqueAtual: lowValue });
     await loadAllData();
     setMessage(
       `⚠️ Estoque de ${med.nome} ajustado para ${lowValue} ${med.unidade} (Alerta de Estoque Baixo ativado). Confira o Mini-Mapa Leaflet de Farmácias Próximas!`,
@@ -666,7 +672,7 @@ function App() {
     const d = new Date();
     d.setDate(d.getDate() - 90);
     const iso90Ago = d.toISOString().slice(0, 10);
-    await database.medications.update(med.id, {
+    await storageRepository.updateMedication(med.id, {
       tipo: "continuo",
       origemPrescricao: "especializado",
       dataInicio: iso90Ago,
@@ -705,9 +711,72 @@ function App() {
 
   async function handleDeleteMedication(med: Medication) {
     if (!med.id) return;
-    await database.medications.delete(med.id);
+    await storageRepository.deleteMedication(med.id);
     await loadAllData();
     setMessage(`Medicamento "${med.nome}" removido.`);
+  }
+
+  // Confirmação de dose em atraso vinda do Alerta Inteligente
+  async function handleConfirmOverdueDose(med: Medication, scheduledTime: string) {
+    await handleTakeDose(med);
+    setMessage(
+      `✅ Dose de ${med.nome} agendada para ${scheduledTime} confirmada como tomada com sucesso!`,
+    );
+  }
+
+  // Importação Direta de Medicamentos vindos do Agente Farmacêutico Virtual
+  async function handleImportMedicationFromPharmacist(item: ExtractedPrescriptionItem) {
+    const profId =
+      selectedProfileId === "all"
+        ? (profiles[0]?.id ?? 1)
+        : selectedProfileId;
+    const targetProf = profileMap.get(profId) ?? profiles[0];
+
+    const newMed: Omit<Medication, "id"> = {
+      profileId: profId,
+      nome: item.nome,
+      dosagem: item.dosagem,
+      corIdentificacao: getDefaultMedicationColor(item.nome, allMedications.length),
+      unidade: item.unidade,
+      quantidadePorDose: 1,
+      origemPrescricao: item.controlado ? "especializado" : "emergencia",
+      condicaoTratamento: item.condicaoTratamento || item.paraQueServe || "Prescrição Médica",
+      tipo: item.tipo,
+      controlado: item.controlado,
+      tipoReceita: item.tipoReceita,
+      intervaloHoras: item.intervaloHoras,
+      horarios: item.horarios,
+      duracaoDias: item.tipo === "temporario" ? 7 : undefined,
+      estoqueAtual: 30,
+      estoqueTotal: 30,
+      alertaEstoqueMinimo: 8,
+      dataInicio: todayIsoString(),
+      ativo: true,
+      resumoBula: {
+        paraQueServe: item.paraQueServe || "Uso conforme prescrição e indicação médica.",
+        alertasPrincipais: item.alertasSeguranca || [],
+        interacoes: [],
+        efeitosColaterais: [],
+        usoContinuoAviso:
+          item.tipo === "continuo"
+            ? "⚠️ Uso contínuo: não interrompa este medicamento sem orientação médica expressa."
+            : null,
+        tarja: item.controlado ? "preta" : "livre",
+        contextoPerfilClinico: targetProf?.condicaoClinica ?? null,
+      },
+    };
+
+    await storageRepository.createMedication(newMed);
+    await loadAllData();
+    setMessage(
+      `📥 [${targetProf?.nome ?? "Perfil"}] "${item.nome} ${item.dosagem}" cadastrado automaticamente via Meu Farmacêutico!`,
+    );
+  }
+
+  async function handleImportAllMedicationsFromPharmacist(items: ExtractedPrescriptionItem[]) {
+    for (const item of items) {
+      await handleImportMedicationFromPharmacist(item);
+    }
   }
 
   async function handleLocateNearbyPharmacies() {
@@ -773,7 +842,7 @@ function App() {
       content: `[${prof?.nome ?? "Eu"}] ${q}`,
       timestamp: new Date().toISOString(),
     };
-    await database.chat_history.add(userEntry);
+    await storageRepository.addChatEntry(userEntry);
 
     try {
       const profMeds = allMedications.filter((m) => m.profileId === profId);
@@ -788,7 +857,7 @@ function App() {
         content: ans.resposta,
         timestamp: new Date().toISOString(),
       };
-      await database.chat_history.add(assistantEntry);
+      await storageRepository.addChatEntry(assistantEntry);
       await loadAllData();
     } finally {
       setIsAskingChat(false);
@@ -898,7 +967,20 @@ function App() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-4 pb-16 pt-6 sm:px-8 sm:pt-8">
+      <div className="mx-auto max-w-7xl px-4 pb-16 pt-6 sm:px-8 sm:pt-8 space-y-6">
+        {/* ALERTA INTELIGENTE DE VERIFICAÇÃO (PASSOU 15 MINUTOS) */}
+        <DoseVerificationBanner
+          medications={visibleMedications}
+          doseLogs={doseLogs}
+          onConfirmDose={handleConfirmOverdueDose}
+        />
+
+        {/* BARRA DE ACESSO RÁPIDO: TOMAR AGORA COM ÍCONES ESPECÍFICOS */}
+        <QuickDoseBar
+          medications={visibleMedications}
+          onTakeDose={handleTakeDose}
+        />
+
         {/* PAINEL DE RESUMO RÁPIDO DE ALTA LEGIBILIDADE (KPI CARDS) */}
         <HighReadabilityKpiBar
           medications={visibleMedications}
@@ -906,13 +988,18 @@ function App() {
         />
 
         {/* Banner de Ações Rápidas */}
-        <section className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-emerald-950/10 bg-white p-5 shadow-card sm:p-6">
+        <section className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-emerald-950/10 bg-white p-5 shadow-card sm:p-6">
           <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xl sm:text-2xl font-black text-ink">
+                Olá, {greetingName}! 👋
+              </span>
+            </div>
             <p className="text-xs font-bold uppercase tracking-[0.15em] text-forest">
               {selectedProfileId === "all"
-                ? "👨‍👩‍👧 Visão Consolidada de Toda a Família"
+                ? `👨‍👩‍👧 Visão Consolidada de Toda a Família (${profiles.length} perfis)`
                 : `${getKinshipEmoji(activeProfileObject?.parentesco ?? "proprio")} Perfil Ativo: ${
-                    activeProfileObject?.nome ?? "Eu"
+                    activeProfileObject?.nome ?? "Meu Perfil"
                   }${
                     activeProfileObject?.condicaoClinica
                       ? ` (${activeProfileObject.condicaoClinica})`
@@ -931,8 +1018,17 @@ function App() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              onClick={() => setShowPharmacistModal(true)}
+              className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-forest px-4 py-2 text-xs font-extrabold text-white shadow-sm transition hover:bg-emerald-900 sm:text-sm"
+              data-testid="open-pharmacist-modal-btn"
+            >
+              🧑‍⚕️ Meu Farmacêutico
+            </button>
+
+            <button
+              type="button"
               onClick={() => setShowNewMedPanel((prev) => !prev)}
-              className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-forest px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-900 sm:text-sm"
+              className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-emerald-900/20 bg-emerald-50 px-4 py-2 text-xs font-bold text-forest shadow-sm transition hover:bg-mint sm:text-sm"
               data-testid="open-new-med-btn"
             >
               <Plus size={17} />
@@ -2027,6 +2123,15 @@ function App() {
 
       {/* Pop-up / Modal Automático Pós-Cadastro: Mini-Relatório Inteligente da Medicação */}
       <MiniReportModal report={activeMiniReport} onClose={() => setActiveMiniReport(null)} />
+
+      {/* Agente Virtual Especializado: Meu Farmacêutico */}
+      <PharmacistChatModal
+        isOpen={showPharmacistModal}
+        onClose={() => setShowPharmacistModal(false)}
+        activeProfile={activeProfileObject}
+        onImportMedication={handleImportMedicationFromPharmacist}
+        onImportAllMedications={handleImportAllMedicationsFromPharmacist}
+      />
     </main>
   );
 }

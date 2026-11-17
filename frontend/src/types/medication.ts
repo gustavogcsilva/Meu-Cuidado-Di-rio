@@ -150,3 +150,41 @@ export interface AutomatedAlertItem {
   requerGpsFarmacias: boolean;
   canaisEnvio: string[];
 }
+
+export interface OnlinePharmacyLink {
+  farmacia: string;
+  urlBusca: string;
+  exigeReceitaFisica: boolean;
+  observacao?: string | null;
+}
+
+export interface ExtractedPrescriptionItem {
+  nome: string;
+  dosagem: string;
+  unidade: MedicationUnit;
+  quantidadePorDose: number;
+  origemPrescricao: PrescriptionOrigin;
+  condicaoTratamento?: string | null;
+  tipo: MedicationType;
+  controlado: boolean;
+  tipoReceita: PrescriptionType;
+  intervaloHoras: number;
+  horarios: string[];
+  duracaoDias?: number | null;
+  estoqueSugerido: number;
+  alertaEstoqueMinimo: number;
+  paraQueServe: string;
+  comoTomar: string;
+  alertasSeguranca: string[];
+  ondeComprarOnline: OnlinePharmacyLink[];
+}
+
+export interface PharmacistConsultResponse {
+  perfilConsiderado: string;
+  resumoConsulta: string;
+  itensIdentificados: ExtractedPrescriptionItem[];
+  farmaciasFisicasProximas: NearbyPharmacy[];
+  alertasGerais: string[];
+  geradoEm: string;
+}
+
